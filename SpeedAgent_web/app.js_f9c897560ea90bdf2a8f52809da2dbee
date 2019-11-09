@@ -1,0 +1,176 @@
+const express = require('express');
+const session = require('express-session');
+const cookieParser = require('cookie-parser');
+const util = require('util');
+const sqlite3 = require('sqlite3').verbose();
+
+const app = express();
+const router = express.Router();
+const agent_router = express.Router();
+const admin_router = express.Router();
+const FLAG = require('./flag');
+
+const version = '0.1';
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
+app.use(cookieParser());
+app.use(session({
+ secret: '@S3cr3t_Secr3T@',
+ resave: true,
+ saveUninitialized: false
+}));
+
+
+// db
+let db = new sqlite3.Database('sql.db', sqlite3.OPEN_READWRITE|sqlite3.OPEN_CREATE, (err) => {
+    if (err) {
+        console.error(err.message);
+    } else {
+        console.log('Connected to the mydb database.');
+    }
+});
+
+const dropQuery ='DROP TABLE IF EXISTS USER;';
+
+const CreateUserTableQuery = `
+  CREATE TABLE IF NOT EXISTS USER(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userid TEXT UNIQUE,
+    userpw TEXT,
+    username TEXT,
+    isAdmin BOOLEAN DEFAULT(FALSE)
+  )
+`;
+
+//const init_sql = `INSERT INTO USER(userid, userpw, username, isAdmin) values('admin', '[Censored]', 'admin', true)`;
+
+db.serialize((err) => {
+	if(err){ console.error(err.message); }
+
+	db.each(dropQuery);
+	db.each(CreateUserTableQuery);
+	db.each(init_sql);
+});
+
+// main_router
+router.get('/', function(req, res){
+	res.send(util.format('Speed Agent API v%s', version));
+});
+
+router.put('/join', function(req, res){
+	const { userid, userpw, username } = req.body;
+
+	if(userid && userpw, username){
+		db.run("insert into USER(userid, userpw, username) values (?,?,?);",
+			userid, userpw, username,function(err){
+			if(err){
+				return res.status(500).json({'Error':-1, 'Message':err.message});
+			}else{
+				return res.json({'Error': 0, 'Message':'success'});
+			}
+		});
+	}else{
+		return res.status(400).json({'Error':-1, 'Message':'Check your Input'});
+	}
+});
+
+router.post('/login', function(req, res){
+	const { userid, userpw } = req.body;
+
+	if(userid && userpw){
+		db.get('select * from USER where userid=? and userpw=?',userid, userpw,function(err,row){
+			if(err){
+				return res.status(404).json({'Error':-1, 'Message':'Login Fail'});
+			}
+			sess = req.session;
+			sess.uid = row.id;
+			sess.userid = row.userid;
+			sess.username = row.username;
+			sess.isAdmin = row.isAdmin?true:false;
+			return res.json({'Error':0 , 'Message':'Login success'});
+		});
+	}else{
+		return res.status(400).json({'Error':-1, 'Message':'Check your Input'});
+	}
+});
+
+router.get('/logout', function(req, res){
+	req.session.destroy(function(){ 
+		req.session;
+	});
+	return res.json({'Error': 0, 'Message':'success'});
+});
+
+// agent_router
+agent_router.get('/me', function(req, res){
+	sess = req.session;
+	var data = { 
+		Error: 0,
+		Message: '',
+		uid: sess.uid,
+		userid: sess.userid,
+		username: sess.username,
+		isAdmin: sess.isAdmin
+	};
+	res.json(data);
+});
+
+agent_router.get('/search/:uid', function(req, res){
+	var uid = req.params.uid;
+	db.get('select * from USER where id='+uid,function(err,row){
+		if(err){
+			return res.status(500).json({'Error':-1, 'Message':'DB Error'});
+		}
+
+		var data = {
+			uid: row.id,
+			userid: row.userid,
+			username: row.username,
+			isAdmin: row.isAdmin?true:false,
+		};
+
+		return res.json({'Error':0 , 'Message': data });
+	});
+});
+
+agent_router.put('/changename', function(req, res){
+	const { username } = req.body;
+
+	var name = username.toString();
+	db.run('UPDATE USER SET username=? where id=?', name, req.session.uid, function (err) {
+		if (err) {
+			return res.status(500).json({'Error':-1, 'Message':err.message});
+		}
+		util._extend(req.session, req.body);
+		return res.json({'Error': 0, 'Message':'success'})
+	});
+});
+
+// admin_router
+admin_router.get('/flag', function(req, res){
+	var result = {};
+	if(req.session.isAdmin === true) return res.send(FLAG());
+	res.send('admin page');
+});
+
+function login_check (req, res, next){
+	if (req.session.userid) {
+		next();
+	}else{
+		return res.status(403).json({'Error':-1, 'Message':'Unauthorized'})
+	}
+}
+
+// Routing
+app.use('/', router);
+app.all('/user/*', login_check, function(req, res, next){ next();});
+app.use('/user/', agent_router);
+app.all('/admin/*', login_check, function(req, res, next){ next();});
+app.use('/admin/', admin_router);
+
+
+// Run
+var server = app.listen(3000, function(){
+    console.log("Express server has started on port 3000")
+})
